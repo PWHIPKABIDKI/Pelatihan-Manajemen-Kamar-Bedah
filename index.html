@@ -3,11 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pelatihan Manajemen Kamar Bedah | HIPKABI DKI Jakarta</title>
+<title>Ujian Tulis Pelatihan Manajemen Kamar Bedah | HIPKABI DKI Jakarta</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
     --ink:#0E2A2D;
@@ -184,24 +183,15 @@
   .stat.ok{background:var(--green-bg);color:var(--green)}
   .stat.bad{background:var(--red-bg);color:var(--red)}
   .stat.skip{background:var(--amber-bg);color:var(--amber)}
-  .review-title{font-size:1.15rem;margin:30px 0 14px}
-  .rev{border-left:5px solid var(--line);margin-bottom:12px}
-  .rev.ok{border-left-color:var(--green)}
-  .rev.bad{border-left-color:var(--red)}
-  .rev.skip{border-left-color:var(--amber)}
-  .rev .q-text{font-size:.98rem;margin-bottom:12px}
-  .ansline{font-size:.9rem;margin-bottom:4px}
-  .ansline b{font-family:'Sora',sans-serif}
-  .tag{display:inline-block;font-size:.72rem;font-weight:700;letter-spacing:.06em;border-radius:6px;padding:2px 8px;margin-bottom:10px}
-  .rev.ok .tag{background:var(--green-bg);color:var(--green)}
-  .rev.bad .tag{background:var(--red-bg);color:var(--red)}
-  .rev.skip .tag{background:var(--amber-bg);color:var(--amber)}
-  .pemb{
-    margin-top:10px;background:var(--sterile);border-radius:10px;
-    padding:11px 13px;font-size:.89rem;color:var(--ink-soft);
-  }
-  .pemb b{color:var(--scrub-deep)}
   .lockicon{font-size:2.6rem;margin-bottom:8px}
+  #toast{
+    position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);
+    background:var(--ink);color:#E7F5F3;border-radius:12px;padding:12px 18px;
+    font-size:.9rem;font-weight:500;box-shadow:0 10px 24px rgba(14,42,45,.35);
+    opacity:0;pointer-events:none;transition:opacity .25s ease, transform .25s ease;
+    z-index:50;max-width:92vw;text-align:center;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style>
 </head>
 <body>
@@ -218,7 +208,7 @@
     <div class="chips">
       <div class="chip">&#128203; <span><b>30</b> soal pilihan ganda</span></div>
       <div class="chip">&#9201;&#65039; <span>Total waktu <b>30 menit</b></span></div>
-      <div class="chip">&#128276; <span><b>Alarm</b> saat sisa 5 menit</span></div>
+      <div class="chip">&#128276; <span><b>Notifikasi</b> &amp; alarm waktu</span></div>
       <div class="chip">&#9989; <span>Kesempatan <b>1 kali</b> ujian</span></div>
     </div>
     <div class="notice" style="margin-bottom:14px">&#9888;&#65039; Jawaban terkirim <b>otomatis</b> saat waktu 30 menit habis, dan ujian hanya dapat dikerjakan <b>satu kali</b>. Pastikan Anda siap sebelum memulai.</div>
@@ -288,12 +278,9 @@
       </div>
       <div class="stack" style="margin-top:20px">
         <div class="notice" id="send-status" style="display:none"></div>
-        <button class="btn btn-primary btn-block" onclick="savePDF()">&#128196; Simpan Hasil (PDF)</button>
         <div class="notice">&#128274; Jawaban Anda sudah terkirim. Ujian hanya dapat dikerjakan satu kali dan tidak dapat diulang tanpa izin panitia.</div>
       </div>
     </div>
-    <h2 class="review-title">&#128221; Review Jawaban &amp; Pembahasan</h2>
-    <div id="review"></div>
   </section>
 
   <!-- ============ TERKUNCI ============ -->
@@ -317,6 +304,7 @@
   </section>
 
 </div>
+<div id="toast" role="status"></div>
 
 <script>
 /* =========================================================
@@ -336,7 +324,10 @@ const SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyCQOPRNmTaIe6
 
 const TOTAL_SECONDS = 30 * 60;   // total waktu ujian: 30 menit
 const ALARM_AT      = 5 * 60;    // alarm saat sisa waktu 5 menit
+const ALARM_AT_2    = 3 * 60;    // alarm tambahan saat sisa waktu 3 menit
+const NOTIF_EVERY   = 10 * 60;   // notifikasi berkala tiap 10 menit berjalan
 const LOCK_KEY      = "ukmb_hipkabi_lock_v1";
+const PROGRESS_KEY  = "ukmb_hipkabi_progress_v1";
 
 /* ================= DATA SOAL ================= */
 const LETTERS = ["A","B","C","D"];
@@ -444,8 +435,9 @@ function newState(){
     cur:0,
     answers:Array(QUESTIONS.length).fill(null),
     remaining:TOTAL_SECONDS,
+    endAt:0,
+    fired:{},
     finished:false,
-    alarmed:false,
     tanggal:""
   };
 }
@@ -497,6 +489,50 @@ function goTo(id){
   window.scrollTo({top:0});
 }
 
+/* ================= SIMPAN OTOMATIS (ANTI-REFRESH) ================= */
+function saveProgress(){
+  if(!state || state.finished) return;
+  try{
+    localStorage.setItem(PROGRESS_KEY, JSON.stringify({
+      nama:state.nama, instansi:state.instansi, cur:state.cur,
+      answers:state.answers, endAt:state.endAt, fired:state.fired
+    }));
+  }catch(e){}
+}
+function getProgress(){
+  try{ return JSON.parse(localStorage.getItem(PROGRESS_KEY) || "null"); }
+  catch(e){ return null; }
+}
+function clearProgress(){
+  try{ localStorage.removeItem(PROGRESS_KEY); }catch(e){}
+}
+function resumeExam(p){
+  state = newState();
+  state.nama = p.nama; state.instansi = p.instansi;
+  state.cur = p.cur || 0;
+  state.answers = (p.answers && p.answers.length === QUESTIONS.length) ? p.answers : state.answers;
+  state.endAt = p.endAt;
+  state.fired = p.fired || {};
+  state.remaining = Math.max(0, Math.round((state.endAt - Date.now())/1000));
+  buildDots();
+  goTo('exam');
+  renderQuestion();
+  if(state.remaining <= 0){ finishExam(true); return; }
+  startTick();
+  toast('&#128260; Ujian dilanjutkan otomatis. Sisa waktu: '+fmt(state.remaining));
+}
+
+/* ================= NOTIFIKASI LAYAR ================= */
+let toastTimer = null;
+function toast(html){
+  const el = document.getElementById('toast');
+  if(!el) return;
+  el.innerHTML = html;
+  el.classList.add('show');
+  if(toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=> el.classList.remove('show'), 6000);
+}
+
 /* ================= NADA ALARM ================= */
 function initAudio(){
   try{
@@ -519,10 +555,11 @@ function beep(freq, dur, delay){
     o.start(t); o.stop(t+dur+0.05);
   }catch(e){}
 }
-function alarm5Menit(){          // alarm panjang saat sisa 5 menit
+function alarmPanjang(){         // alarm panjang (sisa 5 menit & 3 menit)
   for(let i=0;i<3;i++){ beep(880,0.28,i*0.45); beep(660,0.28,i*0.45+0.15); }
 }
-function beepMenit(){ beep(880,0.22,0); }                 // penanda tiap menit terakhir
+function beepNotif(){ beep(740,0.18,0); beep(988,0.18,0.22); }   // notifikasi 10 menit
+function beepMenit(){ beep(880,0.22,0); }                 // penanda menit-menit akhir
 function beepDetik(){ beep(1100,0.09,0); }                // hitung mundur 10 detik akhir
 
 /* ================= MULAI ================= */
@@ -536,6 +573,8 @@ function startExam(){
   initAudio();
   state = newState();
   state.nama = nama; state.instansi = instansi;
+  state.endAt = Date.now() + TOTAL_SECONDS*1000;
+  saveProgress();
   buildDots();
   goTo('exam');
   renderQuestion();
@@ -547,14 +586,32 @@ function startTick(){
   stopTick();
   tick = setInterval(()=>{
     if(!state || state.finished) return stopTick();
-    state.remaining--;
+    state.remaining = Math.max(0, Math.round((state.endAt - Date.now())/1000));
     const r = state.remaining;
     updateTimerUI();
-    if(r === ALARM_AT && !state.alarmed){ state.alarmed = true; alarm5Menit(); }
-    else if(r < ALARM_AT && r > 10 && r % 60 === 0){ beepMenit(); }
-    else if(r <= 10 && r > 0){ beepDetik(); }
+    signals(r);
+    saveProgress();
     if(r <= 0){ finishExam(true); }   // submit otomatis: selesai tidak selesai
   },1000);
+}
+
+/* penanda waktu: notifikasi tiap 10 menit, alarm sisa 5 & 3 menit */
+function signals(r){
+  const once = (key, fn)=>{ if(!state.fired[key]){ state.fired[key] = true; fn(); } };
+  const berjalan = TOTAL_SECONDS - r;
+
+  if(berjalan >= NOTIF_EVERY && r > ALARM_AT)
+    once('n10', ()=>{ beepNotif(); toast('&#128276; 10 menit telah berjalan. Sisa waktu: <b>'+fmt(r)+'</b>'); });
+  if(berjalan >= NOTIF_EVERY*2 && r > ALARM_AT)
+    once('n20', ()=>{ beepNotif(); toast('&#128276; 20 menit telah berjalan. Sisa waktu: <b>'+fmt(r)+'</b>'); });
+
+  if(r <= ALARM_AT && r > ALARM_AT_2)
+    once('a5', ()=>{ alarmPanjang(); toast('&#9888;&#65039; <b>Sisa waktu 5 menit!</b> Segera selesaikan jawaban Anda.'); });
+  if(r <= ALARM_AT_2 && r > 0)
+    once('a3', ()=>{ alarmPanjang(); toast('&#128680; <b>Sisa waktu 3 menit!</b> Jawaban akan terkirim otomatis saat waktu habis.'); });
+
+  if(r === 120 || r === 60) beepMenit();
+  if(r <= 10 && r > 0) beepDetik();
 }
 function stopTick(){ if(tick){clearInterval(tick); tick=null;} }
 
@@ -609,6 +666,7 @@ function renderQuestion(){
     b.innerHTML = '<span class="letter">'+LETTERS[j]+'</span><span>'+esc(opt)+'</span>';
     b.onclick = ()=>{
       state.answers[i] = (state.answers[i]===j) ? null : j;
+      saveProgress();
       renderQuestion();
     };
     box.appendChild(b);
@@ -655,6 +713,8 @@ function finishExam(auto){
   const skor = Math.round(benar/QUESTIONS.length*1000)/10;
   const skorTxt = (skor%1===0)?skor.toFixed(0):skor.toFixed(1);
 
+  clearProgress();
+
   // kunci: 1 peserta = 1 kali ujian
   saveLock({nama:state.nama, instansi:state.instansi, tanggal:state.tanggal, skor:skorTxt});
 
@@ -680,97 +740,8 @@ function finishExam(auto){
     esc(state.nama)+' &bull; '+esc(state.instansi)+'<br>'+esc(state.tanggal)+
     (auto?'<br><span style="color:var(--amber);font-weight:600">&#9203; Waktu habis \u2014 jawaban dikirim otomatis.</span>':'');
 
-  renderReview();
   goTo('result');
   if(auto) alert('Waktu 30 menit telah habis. Jawaban Anda dikirim otomatis.');
-}
-
-function renderReview(){
-  const box = document.getElementById('review');
-  box.innerHTML = '';
-  QUESTIONS.forEach((Q,i)=>{
-    const a = state.answers[i];
-    const status = (a===null)?'skip':(a===Q.k?'ok':'bad');
-    const tag = {ok:'&#10004; BENAR', bad:'&#10008; SALAH', skip:'&#8722; TIDAK DIJAWAB'}[status];
-    const div = document.createElement('div');
-    div.className = 'card rev '+status;
-    div.innerHTML =
-      '<span class="tag">'+tag+'</span>'+
-      '<div class="q-num">SOAL '+String(i+1).padStart(2,'0')+'</div>'+
-      '<div class="q-text">'+esc(Q.q)+'</div>'+
-      '<div class="ansline">Jawaban Anda: <b>'+(a===null?'&#8212;':LETTERS[a]+'. '+esc(Q.o[a]))+'</b></div>'+
-      '<div class="ansline">Kunci jawaban: <b>'+LETTERS[Q.k]+'. '+esc(Q.o[Q.k])+'</b></div>'+
-      '<div class="pemb"><b>Pembahasan:</b> '+esc(Q.p)+'</div>';
-    box.appendChild(div);
-  });
-}
-
-/* ================= PDF ================= */
-function savePDF(){
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({unit:'mm',format:'a4'});
-  const W = doc.internal.pageSize.getWidth();
-  const M = 15;
-  let y = 0;
-
-  let benar=0,salah=0,kosong=0;
-  state.answers.forEach((a,i)=>{
-    if(a===null)kosong++; else if(a===QUESTIONS[i].k)benar++; else salah++;
-  });
-  const skor = Math.round(benar/QUESTIONS.length*1000)/10;
-
-  doc.setFillColor(10,79,74);
-  doc.rect(0,0,W,30,'F');
-  doc.setTextColor(255,255,255);
-  doc.setFont('helvetica','bold'); doc.setFontSize(13);
-  doc.text('HASIL UJIAN TULIS PELATIHAN MANAJEMEN KAMAR BEDAH',W/2,13,{align:'center'});
-  doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
-  doc.text('HIPKABI DKI Jakarta',W/2,20,{align:'center'});
-  y = 40;
-
-  doc.setTextColor(20,20,20); doc.setFontSize(11);
-  const line = (label,val)=>{
-    doc.setFont('helvetica','bold'); doc.text(label,M,y);
-    doc.setFont('helvetica','normal'); doc.text(': '+val,M+35,y);
-    y += 7;
-  };
-  line('Nama', state.nama);
-  line('Asal Instansi', state.instansi);
-  line('Waktu Ujian', state.tanggal);
-  y += 3;
-
-  doc.setFont('helvetica','bold'); doc.setFontSize(13);
-  doc.text('SKOR: '+((skor%1===0)?skor.toFixed(0):skor.toFixed(1))+' / 100',M,y); y+=7;
-  doc.setFont('helvetica','normal'); doc.setFontSize(11);
-  doc.text('Benar: '+benar+'    Salah: '+salah+'    Tidak dijawab: '+kosong,M,y); y+=10;
-
-  doc.setFont('helvetica','bold'); doc.setFontSize(11);
-  doc.text('Rincian Jawaban',M,y); y+=6;
-  doc.setFontSize(9);
-  doc.setFont('helvetica','bold');
-  doc.text('No',M,y); doc.text('Jawaban',M+12,y); doc.text('Kunci',M+34,y); doc.text('Status',M+52,y);
-  doc.text('No',M+95,y); doc.text('Jawaban',M+107,y); doc.text('Kunci',M+129,y); doc.text('Status',M+147,y);
-  y+=5;
-  doc.setFont('helvetica','normal');
-  const half = Math.ceil(QUESTIONS.length/2);
-  const rowY = y;
-  for(let i=0;i<QUESTIONS.length;i++){
-    const col = i<half ? 0 : 95;
-    const yy  = rowY + (i%half)*5.4;
-    const a = state.answers[i];
-    const st = (a===null)?'Kosong':(a===QUESTIONS[i].k?'Benar':'Salah');
-    doc.text(String(i+1),M+col,yy);
-    doc.text(a===null?'-':LETTERS[a],M+12+col,yy);
-    doc.text(LETTERS[QUESTIONS[i].k],M+34+col,yy);
-    doc.text(st,M+52+col,yy);
-  }
-  y = rowY + half*5.4 + 8;
-
-  doc.setFontSize(8); doc.setTextColor(110,110,110);
-  doc.text('Dokumen ini dibuat otomatis oleh aplikasi Ujian Tulis Pelatihan Manajemen Kamar Bedah - HIPKABI DKI Jakarta.',M,y);
-
-  const safe = state.nama.replace(/[^a-z0-9]+/gi,'_');
-  doc.save('Hasil_Ujian_ManajemenKamarBedah_'+safe+'.pdf');
 }
 
 /* ================= KIRIM KE SPREADSHEET ================= */
@@ -788,7 +759,7 @@ function sendToSheet(data){
       const blob = new Blob([body],{type:'application/x-www-form-urlencoded'});
       if(navigator.sendBeacon && navigator.sendBeacon(SHEET_WEBAPP_URL, blob)){ done(); return; }
     }catch(e){}
-    setSendStatus('&#9888;&#65039; Hasil gagal terkirim (periksa koneksi). Simpan PDF dan kirimkan ke panitia.');
+    setSendStatus('&#9888;&#65039; Hasil gagal terkirim (periksa koneksi). Screenshot layar ini dan laporkan ke panitia.');
   };
   try{
     fetch(SHEET_WEBAPP_URL,{
@@ -814,10 +785,14 @@ window.addEventListener('beforeunload', e=>{
   if(state && !state.finished){ e.preventDefault(); e.returnValue = ''; }
 });
 
-/* Cek kunci saat halaman dibuka */
+/* Cek kunci & lanjutkan ujian yang belum selesai saat halaman dibuka */
 document.addEventListener('DOMContentLoaded', ()=>{
-  if(getLock()) showLocked();
+  if(getLock()){ clearProgress(); showLocked(); return; }
+  const p = getProgress();
+  if(p && p.endAt){ resumeExam(p); }
 });
+/* Browser mensyaratkan interaksi dulu sebelum audio: aktifkan pada klik pertama */
+document.addEventListener('click', initAudio, {once:true});
 </script>
 </body>
 </html>
